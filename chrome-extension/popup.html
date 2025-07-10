@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PageRAG Extension</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+      <h1 class="app-title">PageRAG</h1>
+      <button id="scrapePage" class="button primary-button">Save Page</button>
+  
+      <h2 class="section-title">Query Saved Pages</h2>
+      <div id="querySection" class="query-section">
+        <input type="text" id="queryInput" placeholder="Ask a question..." class="input-field">
+        <button id="queryButton" class="button secondary-button">Query</button>
+        <div id="queryResult" class="query-result hidden"></div>
+      </div>
+  
+      <h2 class="section-title">Saved Pages</h2>
+      <div id="savedPagesList" class="saved-pages-list"></div>
+    </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

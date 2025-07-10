@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "RAG Chrome Extension",
+  "version": "1.0",
+  "description": "Scrapes web pages and stores them via API for RAG application.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "images/hyp_logo_16.png",
+      "48": "images/hyp_logo_48.png",
+      "128": "images/hyp_logo_128.png"
+    }
+  },
+  "icons": {
+    "16": "images/hyp_logo_16.png",
+    "48": "images/hyp_logo_48.png",
+    "128": "images/hyp_logo_128.png"
+  }
+}
