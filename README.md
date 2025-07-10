@@ -37,7 +37,6 @@ This project is a full-stack RAG application consisting of a Chrome Extension, a
 Create a `.env` file in the `backend/` directory with the following variables:
 
 ```
-OPENAI_API_KEY=your_openai_api_key_here
 GOOGLE_API_KEY=your_google_api_key_here
 MONGODB_URI=your_mongodb_connection_string
 ```

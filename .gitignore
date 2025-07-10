@@ -20,7 +20,7 @@ yarn-error.log
 .vscode/
 
 # Logs
-*.log
+*.log.*
 
 # Environment variables
 .env
@@ -31,3 +31,6 @@ yarn-error.log
 
 # ChromaDB
 chroma_db/
+
+# Web UI
+web-ui/
