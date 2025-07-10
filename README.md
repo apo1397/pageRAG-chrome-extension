@@ -1,6 +1,8 @@
-# RAG (Retrieval-Augmented Generation) Application
+# Demo for an RAG (Retrieval-Augmented Generation) Application
 
 This project is a full-stack RAG application consisting of a Chrome Extension, a Python FastAPI Backend, and a Next.js Web UI.
+Once installed, the Chrome Extension scrapes articles or webpages and saves the metadata to MongoDB & text embeddings to ChromaDB.
+You can then ask questions on your saved pages, even questions like "What did I learn last week?" and more.
 
 ## Project Structure
 
