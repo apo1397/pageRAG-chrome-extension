@@ -1,4 +1,4 @@
-(function() {
+(function() { console.log('Content script loaded - Script started');
   // Ensure the script only runs once per page load
   if (document.body.dataset.hypScrapeProcessed) {
     return;
@@ -74,7 +74,14 @@
 
   console.log("Content script running on:", pageUrl);
 
-  chrome.runtime.sendMessage({ action: "scrapePage", url: pageUrl, content: content, title: pageTitle, favicon_url: faviconUrl }, (response) => {
-    console.log("Message sent to background.js, response:", response);
-  });
+    console.log('Sending message to background.js with action: scrapePage');
+    chrome.runtime.sendMessage({
+      action: "scrapePage",
+      url: window.location.href,
+      title: pageTitle,
+      content: content || '',
+      faviconUrl: faviconUrl
+    }, function(response) {
+      console.log('Message sent to background.js, response:', response);
+    });
 })();

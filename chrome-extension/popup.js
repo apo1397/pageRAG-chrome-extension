@@ -1,4 +1,5 @@
 document.addEventListener('DOMContentLoaded', function() {
+  console.log('Popup DOMContentLoaded - Script started');
   const scrapeButton = document.getElementById('scrapePage');
   const queryButton = document.getElementById('queryButton');
   const queryInput = document.getElementById('queryInput');
@@ -8,7 +9,8 @@ document.addEventListener('DOMContentLoaded', function() {
   // Function to fetch and display saved pages
   async function fetchAndDisplaySavedPages() {
     try {
-      const response = await fetch('http://127.0.0.1:8000/get_saved_pages');
+      const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const response = await fetch(`http://127.0.0.1:8000/get_saved_pages?timezone=${encodeURIComponent(userTimezone)}`);
       const pages = await response.json();
       savedPagesList.innerHTML = ''; // Clear previous list
 
@@ -68,9 +70,30 @@ document.addEventListener('DOMContentLoaded', function() {
                      pageElement.classList.add('hidden'); // Hide pages beyond the first 3
                  }
 
-                const favicon = document.createElement('img');
+                const favicon = document.createElement('link');
+                favicon.setAttribute('rel', 'icon');
                 favicon.classList.add('favicon');
-                favicon.src = page.favicon_url || 'images/default-favicon.png';
+                let faviconUrl = page.favicon_url;
+                console.log('Original favicon URL:', faviconUrl);
+                
+                if (faviconUrl) {
+                    // Check if favicon URL is a relative path
+                    if (faviconUrl.startsWith('/') || !faviconUrl.startsWith('http')) {
+                        // Get domain from page URL
+                        const pageUrl = new URL(page.url);
+                        const domain = `${pageUrl.protocol}//${pageUrl.host}`;
+                        
+                        // Handle both absolute and relative paths
+                        faviconUrl = faviconUrl.startsWith('/') 
+                            ? `${domain}${faviconUrl}`
+                            : `${domain}/${faviconUrl}`;
+                        console.log('Processed favicon URL:', faviconUrl);
+                    }
+                    favicon.src = faviconUrl;
+                } else {
+                    console.log('No favicon URL found, using default');
+                    favicon.src = 'images/default-favicon.png';
+                }
                 pageElement.appendChild(favicon);
 
                 const pageContent = document.createElement('div');
@@ -93,8 +116,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 const dateElement = document.createElement('div');
                 dateElement.classList.add('saved-page-date');
                 const pageDate = new Date(page.date);
-                const options = { year: 'numeric', month: 'long', day: 'numeric' };
-                dateElement.textContent = pageDate.toLocaleDateString(undefined, options);
+                const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
+                dateElement.textContent = pageDate.toLocaleDateString(undefined, options) + ' ' + pageDate.toLocaleTimeString(undefined, options);
                 pageContent.appendChild(dateElement);
 
                 pageElement.appendChild(pageContent);
@@ -103,6 +126,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 deleteButton.classList.add('button', 'delete-button');
                 deleteButton.innerHTML = '<i class="fas fa-trash-alt"></i>'; // FontAwesome trash icon
                 deleteButton.addEventListener('click', (event) => {
+                    console.log('Delete button clicked - Initiating delete');
                     event.stopPropagation(); // Prevent opening the page when deleting
                     if (confirm('Are you sure you want to delete this page?')) {
                         deletePage(page.url, pageElement);
@@ -149,12 +173,13 @@ document.addEventListener('DOMContentLoaded', function() {
     queryResult.textContent = 'Searching...';
     queryResult.classList.remove('hidden');
     try {
+      const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const response = await fetch('http://127.0.0.1:8000/query_pages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ question: question })
+        body: JSON.stringify({ question: question, timezone: userTimezone })
       });
       const result = await response.json();
 
@@ -163,11 +188,14 @@ document.addEventListener('DOMContentLoaded', function() {
         if (result.source_urls && result.source_urls.length > 0) {
           const sourceUrlsDiv = document.createElement('div');
           sourceUrlsDiv.innerHTML = '<b>Source URLs:</b><br>';
+          sourceUrlsDiv.style.wordWrap = 'break-word';
           result.source_urls.forEach(source => {
             const sourceLink = document.createElement('a');
             sourceLink.href = source.url;
             sourceLink.target = '_blank';
-            sourceLink.textContent = source.url;
+            sourceLink.textContent = source.title || source.url;
+            sourceLink.style.display = 'block';
+            sourceLink.style.display = 'block';
             if (source.favicon_url) {
               const faviconImg = document.createElement('img');
               faviconImg.src = source.favicon_url;
@@ -208,114 +236,18 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   // Listen for messages from content.js (forwarded by background.js)
-  // Function to delete a saved page
-  async function deletePage(url, pageElement) {
-    try {
-      const response = await fetch('http://127.0.0.1:8000/delete_page', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ url: url })
-      });
-
-      if (response.ok) {
-        pageElement.remove(); // Remove the element from the UI
-        // Optionally, re-fetch and display saved pages to update grouping if a section becomes empty
-        fetchAndDisplaySavedPages();
-      } else {
-        console.error('Failed to delete page:', response.statusText);
-        alert('Failed to delete page.');
-      }
-    } catch (error) {
-      console.error('Error deleting page:', error);
-      alert('Error deleting page.');
-    }
-  }
-
-  // Event Listeners
-  scrapeButton.addEventListener('click', function() {
-    scrapeButton.disabled = true;
-    scrapeButton.textContent = 'Scraping...';
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.scripting.executeScript({
-        target: { tabId: tabs[0].id },
-        files: ['content.js']
-      }, () => {
-        console.log('Content script executed.');
-      });
-    });
-  });
-
-  // Listen for messages from content.js (forwarded by background.js)
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    console.log('Message received in popup.js:', request.action);
+    console.log('Sender:', sender);
+    console.log('Request:', request);
+
     if (request.action === "scrapePage") {
-      console.log("Scraping page:", request.url);
-      console.log("Scraped content:", request.content);
-      console.log("Scraped title:", request.title);
-      console.log("Scraped favicon URL:", request.favicon_url);
-
-      fetch('http://127.0.0.1:8000/save_page', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          url: request.url,
-          content: request.content,
-          title: request.title,
-          favicon_url: request.favicon_url
-        })
-      })
-      .then(response => response.json())
-      .then(data => {
-        console.log('Page saved successfully:', data);
-        scrapeButton.disabled = false;
-        scrapeButton.textContent = 'Scrape Page';
-        fetchAndDisplaySavedPages(); // Refresh the list of saved pages
-        sendResponse({ status: "Page saved successfully!", data: data });
-      })
-      .catch(error => {
-        console.error('Error saving page:', error);
-        scrapeButton.disabled = false;
-        scrapeButton.textContent = 'Scrape Page';
-        sendResponse({ status: "Error saving page.", error: error });
-      });
-      return true; // Indicates that sendResponse will be called asynchronously
-    }
-  });
-
-      queryButton.addEventListener('click', async () => {
-        const query = queryInput.value;
-        if (!query) return;
-
-        queryResult.textContent = 'Searching...';
-        try {
-          const response = await fetch('http://127.0.0.1:8000/query_pages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ question: query })
-          });
-          const data = await response.json();
-          // Improve text formatting for readability
-          let formattedResponse = data.response || 'No answer found.';
-          formattedResponse = formattedResponse.replace(/\n/g, '\n\n'); // Add extra line breaks for paragraphs
-          formattedResponse = formattedResponse.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Bold text
-          formattedResponse = formattedResponse.replace(/\*(.*?)\*/g, '<em>$1</em>'); // Italic text
-          formattedResponse = formattedResponse.replace(/^- (.*)/gm, '• $1'); // List items
-
-          queryResult.innerHTML = formattedResponse;
-        } catch (error) {
-          console.log('Error querying:', error);
-          queryResult.textContent = 'Error querying.';
-        }
-      });
-
-  // Listen for scrapeComplete message from background.js
-  chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
-    if (request.action === 'scrapeComplete') {
+      // The actual saving is now handled by background.js
+      // This block in popup.js is no longer responsible for the fetch call.
+      // It will receive a 'scrapeComplete' message from background.js instead.
+      console.log('popup.js: scrapePage message received, but saving handled by background.js');
+      // No need to send a response here, as background.js will send scrapeComplete
+    } else if (request.action === 'scrapeComplete') {
       scrapeButton.disabled = false;
       scrapeButton.textContent = 'Scrape Page';
       if (request.status === 'success') {
@@ -325,6 +257,58 @@ document.addEventListener('DOMContentLoaded', function() {
       } else {
         console.error('Failed to scrape page:', request.error);
       }
+    }
+  });
+
+  queryButton.addEventListener('click', async () => {
+    console.log('Query button clicked - Initiating query');
+    const query = queryInput.value;
+    if (!query) return;
+
+    queryResult.textContent = 'Searching...';
+    try {
+      const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const response = await fetch('http://127.0.0.1:8000/query_pages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ question: query, timezone: userTimezone })
+      });
+      const result = await response.json();
+
+      if (result.answer) {
+        queryResult.innerHTML = `<b>Answer:</b> ${result.answer}<br>`;
+        if (result.source_urls && result.source_urls.length > 0) {
+          const sourceUrlsDiv = document.createElement('div');
+          sourceUrlsDiv.innerHTML = '<b>Source URLs:</b><br>';
+          result.source_urls.forEach(source => {
+            const sourceLink = document.createElement('a');
+            sourceLink.href = source.url;
+            sourceLink.target = '_blank';
+            sourceLink.textContent = source.title || source.url;
+            if (source.favicon_url) {
+              const faviconImg = document.createElement('img');
+              faviconImg.src = source.favicon_url;
+              faviconImg.style.width = '16px';
+              faviconImg.style.height = '16px';
+              faviconImg.style.marginRight = '5px';
+              faviconImg.style.verticalAlign = 'middle';
+              sourceUrlsDiv.appendChild(faviconImg);
+            }
+            sourceUrlsDiv.appendChild(sourceLink);
+            sourceUrlsDiv.appendChild(document.createElement('br'));
+          });
+          queryResult.appendChild(sourceUrlsDiv);
+        }
+      } else if (result.error) {
+        queryResult.textContent = `Error: ${result.error}`;
+      } else {
+        queryResult.textContent = 'No answer found.';
+      }
+    } catch (error) {
+      console.error('Error querying pages:', error);
+      queryResult.textContent = 'Error querying pages.';
     }
   });
 

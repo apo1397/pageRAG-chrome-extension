@@ -1,9 +1,7 @@
 Flask
-Flask-Cors
-pymongo
+Flask-PyMongo
 python-dotenv
-langchain-core
-langchain-community
-langchain-google-genai
+google-generativeai
 chromadb
-gunicorn
+langchain
+langchain-google-genai
