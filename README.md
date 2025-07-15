@@ -102,3 +102,4 @@ When you ask a question in the Chrome Extension's popup, the following steps are
 -   **Personalized Summarization**: Allow users to specify the desired length or style of the generated answers.
 -   **Improved Date Handling**: More robust parsing of natural language date queries and handling of timezones.
 -   **Frontend Enhancements**: Develop the Next.js Web UI to provide a richer user experience for managing saved pages and interacting with the RAG system.
+- Handling cases where there's only 1 date, for eg "before the last 24 hrs"

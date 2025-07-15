@@ -127,6 +127,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const dateElement = document.createElement('div');
                 dateElement.classList.add('saved-page-date');
+                // Ensure the date is parsed correctly
                 const pageDate = new Date(page.date);
                 const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
                 dateElement.textContent = pageDate.toLocaleDateString(undefined, options);

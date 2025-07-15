@@ -4,13 +4,14 @@ import logging
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_pymongo import PyMongo
 from datetime import datetime
 from dotenv import load_dotenv
 import google.generativeai as genai
 import chromadb
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Tuple
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 # import numpy as np
@@ -103,6 +104,12 @@ def home():
 def generate_url_hash(url: str) -> str:
     """
     Generates a SHA256 hash for a given URL.
+
+    Args:
+        url (str): The URL string to be hashed.
+
+    Returns:
+        str: The SHA256 hash of the URL as a hexadecimal string.
     """
     return hashlib.sha256(url.encode('utf-8')).hexdigest()
 
@@ -113,25 +120,41 @@ def save_page():
     return process_content()
 
 @app.route('/process_content', methods=['POST'])
-def process_content():
+def process_content() -> Tuple[Response, int]:
+    """
+    Processes content received from the Chrome extension, stores it in MongoDB,
+    and generates embeddings for storage in ChromaDB.
+
+    This function handles the incoming JSON data which includes the URL, content,
+    title, and favicon URL of a webpage. It generates a unique hash for the URL,
+    stores page metadata in MongoDB, cleans and chunks the content, generates
+    embeddings for these chunks, and finally stores them in ChromaDB.
+
+    Returns:
+        Tuple[Response, int]: A Flask Response object and an HTTP status code.
+            Returns a success message with details if processing is successful,
+            or an error message with an appropriate status code if an error occurs.
+    """
     data = request.json
     url = data.get('url')
     content = data.get('content')
     title = data.get('title')
     favicon_url = data.get('faviconUrl') or data.get('favicon_url')
-    timestamp_str = data.get('timestamp')
+    # timestamp_str = data.get('timestamp')
+    timestamp_str = datetime.utcnow()
+    
+    if timestamp_str and isinstance(timestamp_str, str):
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        except ValueError:
+            logger.warning(f"Invalid timestamp format received: {timestamp_str}. Using current UTC time.")
+            timestamp = datetime.utcnow()
+    else:
+        timestamp = datetime.utcnow()
+    
+    epoch_timestamp = int(timestamp.timestamp())
 
-    # if timestamp_str:
-    #     try:
-    #         # Parse the ISO 8601 string back to a datetime object
-    #         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-    #     except ValueError:
-    #         logger.warning(f"Invalid timestamp format received: {timestamp_str}. Using current UTC time.")
-    #         timestamp = datetime.utcnow()
-    # else:
-    #     timestamp = datetime.utcnow()
-
-    logger.info(f"Received request to process content for URL: {url} and favicon_url: {favicon_url} with timestamp: {timestamp}")
+    logger.info(f"Received request to process content for URL: {url} and favicon_url: {favicon_url} ")
     if not url or not content:
         logger.warning("Missing URL or content in process_content request.")
         return jsonify({"error": "Missing url or content"}), 400
@@ -147,7 +170,8 @@ def process_content():
             "content": content,
             "title": title,
             "favicon_url": favicon_url,
-            "timestamp": datetime.utcnow() # Use the received or generated timestamp
+            "timestamp": timestamp.isoformat(), # Store as ISO format string
+            "epoch_timestamp": epoch_timestamp # Store as Unix timestamp (epoch)
         }
         mongo.db.pages.update_one(
             {"_id": url_hash},
@@ -225,7 +249,8 @@ def process_content():
                     
                     metadata = {
                         "url": url,
-                        "timestamp": page_metadata["timestamp"].isoformat(),
+                        "timestamp": page_metadata["timestamp"],
+                         "epoch_timestamp": page_metadata["epoch_timestamp"],
                         "title": title if title is not None else "",
                         "favicon_url": favicon_url if favicon_url is not None else "",
                         "chunk_index": orig_idx,
@@ -278,8 +303,17 @@ def process_content():
     }), 200
 
 
-def clean_content(content):
-    """Clean and preprocess content before chunking."""
+def clean_content(content: str) -> str:
+    """
+    Cleans and preprocesses content by removing excessive whitespace, HTML tags,
+    HTML entities, URLs, and excessive punctuation.
+
+    Args:
+        content (str): The raw content string to be cleaned.
+
+    Returns:
+        str: The cleaned and preprocessed content string.
+    """
     if not content:
         return ""
     
@@ -330,7 +364,21 @@ def extract_keywords(text, top_k=10):
     return [word for word, _ in word_counts.most_common(top_k)]
 
 @app.route('/query_pages', methods=['POST'])
-def query_pages():
+def query_pages() -> Tuple[Response, int]:
+    """
+    Queries the ChromaDB for relevant pages based on a user's question.
+
+    This function takes a natural language question, extracts potential date ranges
+    using a Langchain model, generates an embedding for the question, and then
+    queries ChromaDB. It filters results by date if a date range is provided
+    and retrieves relevant content chunks. Finally, it uses another Langchain model
+    to generate an answer based on the retrieved context.
+
+    Returns:
+        Tuple[Response, int]: A Flask Response object and an HTTP status code.
+            Returns the generated answer and relevant source URLs if successful,
+            or an error message with an appropriate status code if an error occurs.
+    """
     data = request.json
     question = data.get('question')
 
@@ -354,65 +402,107 @@ def query_pages():
         logger.info("Generated embedding for the question.")
 
         # Query ChromaDB for relevant content
-        chroma_query_results = collection.query(
-            query_embeddings=[question_embedding],
-            n_results=20 # Retrieve top 5 relevant documents
-        )
-        logger.info(f"ChromaDB query returned {len(chroma_query_results['ids'][0]) if chroma_query_results['ids'] else 0} results.")
-
-        relevant_urls = []
-        relevant_contents = []
-        for i, doc_id in enumerate(chroma_query_results['ids'][0]):
-            metadata = chroma_query_results['metadatas'][0][i]
-            content = chroma_query_results['documents'][0][i]
-
-            # Apply date filter if provided by Langchain
-            if start_date_str and end_date_str:
+        query_where = {}
+        try:
+            if start_date_str is not None and end_date_str is not None:
                 try:
-                    doc_date = datetime.fromisoformat(metadata['timestamp']).date()
-                    start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-                    end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                    # Convert YYYY-MM-DD date strings to Unix timestamps (epoch)
+                    start_timestamp = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp())
+                    # For end_date, we want to include the entire day, so add 23:59:59 to its timestamp
+                    end_datetime = datetime.strptime(end_date_str, "%Y-%m-%d") + timedelta(days=1, seconds=-1)
+                    end_timestamp = int(end_datetime.timestamp())
 
-                    if not (start_date <= doc_date <= end_date):
-                        logger.info(f"Skipping document {doc_id} due to date filter mismatch. Document date: {doc_date}, Filter range: {start_date} to {end_date}")
+                    query_where = {"$and": [{"epoch_timestamp": {"$gte": start_timestamp}}, {"epoch_timestamp": {"$lte": end_timestamp}}]}
+                    logger.info(f"Applying date filter to ChromaDB query: {query_where}")
+                except ValueError as e:
+                    logger.error(f"Error parsing dates: {e}")
+                    query_where = {}
+
+            try:
+                if query_where:
+                    chroma_query_results = collection.query(
+                        query_embeddings=[question_embedding],
+                        n_results=10, # Retrieve top 10 relevant documents initially
+                        where=query_where, # Apply date filter directly in ChromaDB query
+                        include=['documents', 'distances', 'metadatas']
+                    )
+                else:
+                    chroma_query_results = collection.query(
+                        query_embeddings=[question_embedding],
+                        n_results=10, # Retrieve top 10 relevant documents initially
+                        include=['documents', 'distances', 'metadatas']
+                    )
+                logger.info(f"ChromaDB query returned {len(chroma_query_results['ids'][0]) if chroma_query_results['ids'] else 0} results.")
+            except Exception as e:
+                logger.error(f"Error querying ChromaDB: {e}")
+                raise
+
+            relevant_urls = []
+            relevant_contents = []
+            RELEVANCE_THRESHOLD = 1 # Example threshold, adjust as needed
+
+            try:
+                for i, doc_id in enumerate(chroma_query_results['ids'][0]):
+                    try:
+                        distance = chroma_query_results['distances'][0][i]
+                        metadata = chroma_query_results['metadatas'][0][i]
+                        content = chroma_query_results['documents'][0][i]
+
+                        if distance > RELEVANCE_THRESHOLD:
+                            logger.info(f"Skipping document {doc_id} due to low relevance (distance: {distance} > {RELEVANCE_THRESHOLD}).")
+                            continue
+
+                        relevant_urls.append({"url": metadata['url'], "favicon_url": metadata.get('favicon_url'), "title": metadata.get('title')})
+                        relevant_contents.append(content)
+                    except IndexError as e:
+                        logger.error(f"Error processing document at index {i}: {e}")
                         continue
-                except ValueError:
-                    logger.warning(f"Could not parse extracted date(s): start_date={start_date_str}, end_date={end_date_str}. Proceeding without date filter.")
+            except Exception as e:
+                logger.error(f"Error processing query results: {e}")
+                raise
 
-            relevant_urls.append({"url": metadata['url'], "favicon_url": metadata.get('favicon_url'), "title": metadata.get('title')})
-            relevant_contents.append(content)
-        
-        logger.info(f"Found {len(relevant_contents)} relevant contents after filtering.")
+            logger.info(f"Found {len(relevant_contents)} relevant contents after filtering.")
 
-        if not relevant_contents:
-            logger.info("No relevant content found after processing query and filters.")
-            return jsonify({"message": "No relevant content found for your query.", "urls": []}), 200
+            if not relevant_contents:
+                logger.info("No relevant content found after processing query and filters.")
+                return jsonify({"message": "No relevant content found for your query.", "urls": []}), 200
 
-        # Use Gemini to summarize/answer based on relevant content
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        relevant_contents_str = '\n\n'.join(relevant_contents)
-        # Format URLs for the prompt
-        formatted_urls = [url_obj['url'] for url_obj in relevant_urls]
-        logger.info(f"Formatted URLs for prompt: {formatted_urls}")
-        prompt = f"Given the following content:\n\n{relevant_contents_str}\n\nAnswer the question: {question}\n\nProvide a concise answer."
-        logger.info("Sending prompt to Gemini model.")
-        response = model.generate_content(prompt)
-        logger.info("Received response from Gemini model.")
-        
-        # Ensure unique URLs and their favicons
-        unique_urls = {}
-        unique_titles = {}
-        for url_obj in relevant_urls:
-            unique_urls[url_obj['url']] = url_obj.get('favicon_url')
-            unique_titles[url_obj['url']] = url_obj.get('title')
-        
-        # Convert back to list of dictionaries for the frontend
-        source_urls_for_frontend = []
-        for url, favicon in unique_urls.items():
-            source_urls_for_frontend.append({"url": url, "favicon_url": favicon, "title": unique_titles.get(url)})
-        logger.info({"answer": response.text, "source_urls": source_urls_for_frontend, "question": question})
+            try:
+                # Use Gemini to summarize/answer based on relevant content
+                model = genai.GenerativeModel('gemini-2.0-flash')
+                relevant_contents_str = '\n\n'.join(relevant_contents)
+                formatted_urls = [url_obj['url'] for url_obj in relevant_urls]
+                logger.info(f"Formatted URLs for prompt: {formatted_urls}")
+                prompt = f"You are a question answering model which doesn't have access to the internet or browsing history but only the database. Given the following content:\n\n{relevant_contents_str}\n\nAnswer the question: {question}\n\nProvide a concise answer."
+                logger.info("Sending prompt to Gemini model.")
+                response = model.generate_content(prompt)
+                logger.info("Received response from Gemini model.")
+            except Exception as e:
+                logger.error(f"Error generating content with Gemini: {e}")
+                raise
 
-        return jsonify({"answer": response.text, "source_urls": source_urls_for_frontend}), 200
+            try:
+                # Ensure unique URLs and their favicons
+                unique_urls = {}
+                unique_titles = {}
+                for url_obj in relevant_urls:
+                    unique_urls[url_obj['url']] = url_obj.get('favicon_url')
+                    unique_titles[url_obj['url']] = url_obj.get('title')
+
+                # Convert back to list of dictionaries for the frontend
+                source_urls_for_frontend = []
+                for url, favicon in unique_urls.items():
+                    source_urls_for_frontend.append({"url": url, "favicon_url": favicon, "title": unique_titles.get(url)})
+                logger.info({"answer": response.text, "source_urls": source_urls_for_frontend, "question": question})
+
+                return jsonify({"answer": response.text, "source_urls": source_urls_for_frontend}), 200
+            except Exception as e:
+                logger.error(f"Error formatting response data: {e}")
+                raise
+
+        except Exception as e:
+            logger.error(f"Unexpected error in query processing: {e}")
+            raise
 
     except Exception as e:
         logger.error(f"Error querying content for question '{question}': {e}")
@@ -430,7 +520,7 @@ def get_saved_pages():
                 "url": page["url"],
                 "title": page.get("title", "No Title"), # Use .get for optional fields
                 "favicon_url": page.get("favicon_url", ""), # Use .get for optional fields
-                "date": page["timestamp"].isoformat() # Convert datetime to ISO format string
+                "date": page["timestamp"] # Already ISO format string
             })
         logger.info(f"Retrieved {len(saved_pages)} saved pages from MongoDB.")
         return jsonify(saved_pages), 200
