@@ -13,10 +13,10 @@ import chromadb
 from datetime import datetime
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+# import numpy as np
+# from sklearn.metrics.pairwise import cosine_similarity
 import re
-from collections import Counter
+# from collections import Counter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
