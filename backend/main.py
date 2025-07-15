@@ -121,15 +121,15 @@ def process_content():
     favicon_url = data.get('faviconUrl') or data.get('favicon_url')
     timestamp_str = data.get('timestamp')
 
-    if timestamp_str:
-        try:
-            # Parse the ISO 8601 string back to a datetime object
-            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        except ValueError:
-            logger.warning(f"Invalid timestamp format received: {timestamp_str}. Using current UTC time.")
-            timestamp = datetime.utcnow()
-    else:
-        timestamp = datetime.utcnow()
+    # if timestamp_str:
+    #     try:
+    #         # Parse the ISO 8601 string back to a datetime object
+    #         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+    #     except ValueError:
+    #         logger.warning(f"Invalid timestamp format received: {timestamp_str}. Using current UTC time.")
+    #         timestamp = datetime.utcnow()
+    # else:
+    #     timestamp = datetime.utcnow()
 
     logger.info(f"Received request to process content for URL: {url} and favicon_url: {favicon_url} with timestamp: {timestamp}")
     if not url or not content:
@@ -147,7 +147,7 @@ def process_content():
             "content": content,
             "title": title,
             "favicon_url": favicon_url,
-            "timestamp": timestamp # Use the received or generated timestamp
+            "timestamp": datetime.utcnow() # Use the received or generated timestamp
         }
         mongo.db.pages.update_one(
             {"_id": url_hash},

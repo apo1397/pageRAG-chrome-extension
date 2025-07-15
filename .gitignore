@@ -32,5 +32,28 @@ yarn-error.log
 # ChromaDB
 chroma_db/
 
+# Python specific
+*.env
+.venv/
+virtualenv/
+venv/
+
+# IDE specific
+.idea/
+.vscode/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+
+# Test and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
 # Web UI
 web-ui/
