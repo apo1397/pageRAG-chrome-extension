@@ -48,6 +48,55 @@ body {
   border-bottom: 1px solid var(--border-light);
 }
 
+.saved-page-item {
+  background-color: #ffffff;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.saved-page-item:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 16px var(--shadow-light);
+}
+
+.suggested-queries {
+  margin-top: 15px;
+  padding: 10px;
+  background-color: var(--pastel-green);
+  border-radius: 8px;
+}
+
+.suggested-queries p {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-dark);
+}
+
+.suggested-queries ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.suggested-queries li {
+  background-color: var(--pastel-blue);
+  color: var(--text-light);
+  padding: 6px 10px;
+  margin-bottom: 5px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.suggested-queries li:hover {
+  background-color: #89c2ff; /* A slightly darker blue for hover */
+}
 .button {
   width: 100%;
   padding: 12px 18px;

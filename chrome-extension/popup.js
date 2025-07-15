@@ -5,6 +5,15 @@ document.addEventListener('DOMContentLoaded', function() {
   const queryInput = document.getElementById('queryInput');
   const queryResult = document.getElementById('queryResult');
   const savedPagesList = document.getElementById('savedPagesList');
+  const suggestedQueriesList = document.querySelector('.suggested-queries ul');
+
+  if (suggestedQueriesList) {
+    suggestedQueriesList.addEventListener('click', (event) => {
+      if (event.target.tagName === 'LI') {
+        queryInput.value = event.target.textContent;
+      }
+    });
+  }
 
   // Function to fetch and display saved pages
   async function fetchAndDisplaySavedPages() {
@@ -70,9 +79,15 @@ document.addEventListener('DOMContentLoaded', function() {
                      pageElement.classList.add('hidden'); // Hide pages beyond the first 3
                  }
 
-                const favicon = document.createElement('link');
-                favicon.setAttribute('rel', 'icon');
+                const pageContent = document.createElement('div');
+                pageContent.classList.add('saved-page-content');
+                pageElement.appendChild(pageContent); // Move this line up
+
+                const favicon = document.createElement('img');
                 favicon.classList.add('favicon');
+                favicon.style.width = '16px';
+                favicon.style.height = '16px';
+                favicon.style.marginRight = '5px';
                 let faviconUrl = page.favicon_url;
                 console.log('Original favicon URL:', faviconUrl);
                 
@@ -94,10 +109,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('No favicon URL found, using default');
                     favicon.src = 'images/default-favicon.png';
                 }
-                pageElement.appendChild(favicon);
-
-                const pageContent = document.createElement('div');
-                pageContent.classList.add('saved-page-content');
+                pageContent.appendChild(favicon);
 
                 const titleElement = document.createElement('div');
                 titleElement.classList.add('saved-page-title');
@@ -116,11 +128,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 const dateElement = document.createElement('div');
                 dateElement.classList.add('saved-page-date');
                 const pageDate = new Date(page.date);
-                const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
-                dateElement.textContent = pageDate.toLocaleDateString(undefined, options) + ' ' + pageDate.toLocaleTimeString(undefined, options);
+                const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+                dateElement.textContent = pageDate.toLocaleDateString(undefined, options);
                 pageContent.appendChild(dateElement);
 
-                pageElement.appendChild(pageContent);
+                // pageElement.appendChild(pageContent); // This line is moved up
 
                 const deleteButton = document.createElement('button');
                 deleteButton.classList.add('button', 'delete-button');
