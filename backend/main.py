@@ -356,7 +356,7 @@ def query_pages():
         # Query ChromaDB for relevant content
         chroma_query_results = collection.query(
             query_embeddings=[question_embedding],
-            n_results=5 # Retrieve top 5 relevant documents
+            n_results=20 # Retrieve top 5 relevant documents
         )
         logger.info(f"ChromaDB query returned {len(chroma_query_results['ids'][0]) if chroma_query_results['ids'] else 0} results.")
 
