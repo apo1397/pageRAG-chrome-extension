@@ -20,7 +20,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         url: request.url,
         content: request.content,
         title: request.title,
-        favicon_url: request.favicon_url
+        faviconUrl: request.faviconUrl,
+        timestamp: request.timestamp // Add this line
       })
     })
     .then(response => response.json())
