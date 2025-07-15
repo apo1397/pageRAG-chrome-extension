@@ -10,8 +10,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 import google.generativeai as genai
 import chromadb
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Tuple
+import pytz
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 # import numpy as np
@@ -88,8 +89,6 @@ Return a JSON response with:
 - "is_relevant": true/false
 - "relevance_score": a number between 0-1 (1 being most relevant)
 - "reason": brief explanation of why it's relevant or not
-
-Be strict - only mark as relevant if the content actually contains information that helps answer the question.
 """),
     ("user", "Question: {question}\n\nContent: {content}")
 ])
@@ -510,17 +509,33 @@ def query_pages() -> Tuple[Response, int]:
 
 @app.route('/get_saved_pages', methods=['GET'])
 def get_saved_pages():
+    user_timezone_str = request.args.get('timezone')
+    if not user_timezone_str:
+        logger.warning("Timezone not provided in request. Using UTC.")
+        user_timezone_str = 'UTC'
     try:
         # Fetch all pages from MongoDB
         # We sort by timestamp to get the most recent pages first
         pages_cursor = mongo.db.pages.find({}).sort("timestamp", -1)
         saved_pages = []
         for page in pages_cursor:
+            # Convert UTC timestamp to user's local timezone
+            try:
+                # Ensure the timestamp from MongoDB is treated as UTC
+                utc_dt = datetime.fromisoformat(page["timestamp"]).replace(tzinfo=timezone.utc)
+                user_tz = pytz.timezone(user_timezone_str)
+                local_dt = utc_dt.astimezone(user_tz)
+                # Format to ISO 8601 string, which includes timezone offset
+                formatted_date = local_dt.isoformat()
+            except Exception as e:
+                logger.error(f"Error converting timestamp {page['timestamp']} to timezone {user_timezone_str}: {e}. Sending original UTC.")
+                formatted_date = page["timestamp"]
+
             saved_pages.append({
                 "url": page["url"],
                 "title": page.get("title", "No Title"), # Use .get for optional fields
                 "favicon_url": page.get("favicon_url", ""), # Use .get for optional fields
-                "date": page["timestamp"] # Already ISO format string
+                "date": formatted_date
             })
         logger.info(f"Retrieved {len(saved_pages)} saved pages from MongoDB.")
         return jsonify(saved_pages), 200
