@@ -5,3 +5,5 @@ google-generativeai
 chromadb
 langchain
 langchain-google-genai
+scikit-learn 
+numpy
