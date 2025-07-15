@@ -1,3 +1,4 @@
+from math import dist
 import os
 import hashlib
 import logging
@@ -16,6 +17,8 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+import re
+from collections import Counter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -222,50 +225,175 @@ def process_content():
         except Exception as e:
             logger.warning(f"Error deleting existing chunks: {e}")
 
+        # Clean and preprocess content
+        cleaned_content = clean_content(content)
+        
         # Split content into chunks
-        chunks = text_splitter.split_text(content)
+        chunks = text_splitter.split_text(cleaned_content)
         logger.info(f"Split content into {len(chunks)} chunks")
+
+        # Filter out very short or low-quality chunks
+        filtered_chunks = []
+        for i, chunk in enumerate(chunks):
+            # Skip very short chunks (less than 50 characters)
+            if len(chunk.strip()) < 50:
+                logger.debug(f"Skipping short chunk {i}: {len(chunk)} characters")
+                continue
+            
+            # Skip chunks that are mostly non-alphanumeric
+            alphanumeric_ratio = sum(c.isalnum() or c.isspace() for c in chunk) / len(chunk)
+            if alphanumeric_ratio < 0.6:
+                logger.debug(f"Skipping low-quality chunk {i}: {alphanumeric_ratio:.2f} alphanumeric ratio")
+                continue
+                
+            filtered_chunks.append((i, chunk))
+        
+        logger.info(f"Filtered to {len(filtered_chunks)} quality chunks from {len(chunks)} total")
+
+        if not filtered_chunks:
+            logger.warning(f"No quality chunks found for URL: {url}")
+            return jsonify({"error": "No quality content chunks found"}), 400
 
         # Generate embeddings and store in ChromaDB
         embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         
         # Process chunks in batches to avoid memory issues
         batch_size = 10
-        for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i:i + batch_size]
-            batch_embeddings = embedding_model.embed_documents(batch_chunks)
+        total_chunks_added = 0
+        
+        for i in range(0, len(filtered_chunks), batch_size):
+            batch_data = filtered_chunks[i:i + batch_size]
+            batch_chunks = [chunk for _, chunk in batch_data]
+            batch_original_indices = [orig_idx for orig_idx, _ in batch_data]
             
-            batch_ids = [generate_chunk_id(url_hash, i + j) for j in range(len(batch_chunks))]
-            batch_metadatas = [{
-                "url": url,
-                "timestamp": page_metadata["timestamp"].isoformat(),
-                "title": title if title is not None else "",
-                "favicon_url": favicon_url if favicon_url is not None else "",
-                "chunk_index": i + j,
-                "url_hash": url_hash
-            } for j in range(len(batch_chunks))]
-            
-            collection.add(
-                documents=batch_chunks,
-                embeddings=batch_embeddings,
-                metadatas=batch_metadatas,
-                ids=batch_ids
-            )
-            logger.info(f"Added batch {i//batch_size + 1} of chunks to ChromaDB")
+            try:
+                # Generate embeddings for this batch
+                batch_embeddings = embedding_model.embed_documents(batch_chunks)
+                
+                # Validate embeddings
+                if not batch_embeddings or len(batch_embeddings) != len(batch_chunks):
+                    logger.error(f"Embedding generation failed for batch {i//batch_size + 1}")
+                    continue
+                
+                # Generate IDs and metadata
+                batch_ids = [generate_chunk_id(url_hash, orig_idx) for orig_idx in batch_original_indices]
+                batch_metadatas = []
+                
+                for j, orig_idx in enumerate(batch_original_indices):
+                    # Extract keywords for each chunk
+                    chunk_keywords = extract_keywords(batch_chunks[j], top_k=10)
+                    
+                    metadata = {
+                        "url": url,
+                        "timestamp": page_metadata["timestamp"].isoformat(),
+                        "title": title if title is not None else "",
+                        "favicon_url": favicon_url if favicon_url is not None else "",
+                        "chunk_index": orig_idx,
+                        "url_hash": url_hash,
+                        "keywords": " ".join(chunk_keywords),  # Store keywords for faster filtering
+                        "chunk_length": len(batch_chunks[j]),
+                        "chunk_hash": hashlib.md5(batch_chunks[j].encode()).hexdigest()[:16]  # For deduplication
+                    }
+                    batch_metadatas.append(metadata)
+                
+                # Add to ChromaDB
+                collection.add(
+                    documents=batch_chunks,
+                    embeddings=batch_embeddings,
+                    metadatas=batch_metadatas,
+                    ids=batch_ids
+                )
+                
+                total_chunks_added += len(batch_chunks)
+                logger.info(f"Added batch {i//batch_size + 1} of {len(batch_chunks)} chunks to ChromaDB")
+                
+            except Exception as e:
+                logger.error(f"Error processing batch {i//batch_size + 1}: {e}")
+                continue
 
-        logger.info(f"Successfully processed {len(chunks)} chunks for URL: {url}")
+        if total_chunks_added == 0:
+            logger.error(f"Failed to add any chunks for URL: {url}")
+            return jsonify({"error": "Failed to process any content chunks"}), 500
+
+        logger.info(f"Successfully processed {total_chunks_added} chunks for URL: {url}")
+        
+        # Optional: Verify the data was stored correctly
+        try:
+            verification = collection.get(where={"url": url}, limit=1)
+            if not verification['ids']:
+                logger.warning(f"Verification failed: No chunks found in ChromaDB for URL: {url}")
+        except Exception as e:
+            logger.warning(f"Error during verification: {e}")
         
     except Exception as e:
-        logging.error(f"Error processing content for URL {url}: {e}")
+        logger.error(f"Error processing content for URL {url}: {e}")
         return jsonify({"error": f"Failed to process content: {e}"}), 500
 
-    return jsonify({"message": "Content processed successfully", "url": url, "url_hash": url_hash, "chunks_created": len(chunks)}), 200
+    return jsonify({
+        "message": "Content processed successfully", 
+        "url": url, 
+        "url_hash": url_hash, 
+        "chunks_created": total_chunks_added,
+        "chunks_filtered": len(chunks) - len(filtered_chunks)
+    }), 200
+
+
+def clean_content(content):
+    """Clean and preprocess content before chunking."""
+    if not content:
+        return ""
+    
+    # Remove excessive whitespace
+    content = re.sub(r'\s+', ' ', content)
+    
+    # Remove common web artifacts
+    content = re.sub(r'<[^>]+>', '', content)  # Remove HTML tags
+    content = re.sub(r'&[a-zA-Z]+;', ' ', content)  # Remove HTML entities
+    content = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', content)  # Remove URLs
+    
+    # Remove excessive punctuation
+    content = re.sub(r'[^\w\s.,!?;:()\-\'"]+', ' ', content)
+    
+    # Remove lines that are mostly navigation or boilerplate
+    lines = content.split('\n')
+    filtered_lines = []
+    for line in lines:
+        line = line.strip()
+        if len(line) < 10:  # Skip very short lines
+            continue
+        if any(keyword in line.lower() for keyword in ['cookie', 'privacy policy', 'terms of service', 'subscribe', 'newsletter']):
+            continue
+        filtered_lines.append(line)
+    
+    return '\n'.join(filtered_lines).strip()
+
+
+def extract_keywords(text, top_k=10):
+    """Extract keywords from text for faster filtering."""
+    if not text:
+        return []
+    
+    # Simple keyword extraction - you can replace with more sophisticated methods
+    import re
+    from collections import Counter
+    
+    # Remove common stop words
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'can', 'may', 'might', 'must', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them'}
+    
+    # Extract words
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    
+    # Filter out stop words and get most common
+    filtered_words = [word for word in words if word not in stop_words]
+    word_counts = Counter(filtered_words)
+    
+    return [word for word, _ in word_counts.most_common(top_k)]
 
 @app.route('/query_pages', methods=['POST'])
 def query_pages():
     data = request.json
     question = data.get('question')
-    similarity_threshold = data.get('similarity_threshold', 0.6)  # Lowered threshold
+    similarity_threshold = data.get('similarity_threshold', 0.5)  # Lowered threshold
     max_results = data.get('max_results', 8)  # Reduced max results
     use_llm_rerank = data.get('use_llm_rerank', False)  # Optional LLM re-ranking
 
@@ -287,11 +415,15 @@ def query_pages():
         question_embedding = embedding_model.embed_query(question)
         logger.info("Generated embedding for the question.")
 
-        # Query ChromaDB for relevant content with more results for filtering
+        # Extract keywords from question for fast filtering
+        question_keywords = extract_keywords(question, top_k=5)
+        logger.info(f"Extracted keywords from question: {question_keywords}")
+
+        # Query ChromaDB with higher initial results for better filtering
         chroma_query_results = collection.query(
             query_embeddings=[question_embedding],
-            n_results=min(max_results * 2, 20),  # Get more results for better filtering
-            include=['embeddings', 'metadatas', 'documents']  # Explicitly request embeddings
+            n_results=min(max_results * 3, 30),  # Get more results for better filtering
+            include=['metadatas', 'documents', 'distances']  # Include distances instead of embeddings
         )
         logger.info(f"ChromaDB query returned {len(chroma_query_results['ids'][0]) if chroma_query_results['ids'] else 0} results.")
 
@@ -299,44 +431,36 @@ def query_pages():
             logger.info("No results found in ChromaDB.")
             return jsonify({"message": "No relevant content found for your query.", "urls": []}), 200
 
-        # Calculate similarity scores and filter
-        question_embedding_np = np.array(question_embedding).reshape(1, -1)
+        # Fast filtering with multiple criteria
         relevant_chunks = []
         
         for i, doc_id in enumerate(chroma_query_results['ids'][0]):
             metadata = chroma_query_results['metadatas'][0][i]
             content = chroma_query_results['documents'][0][i]
             
-            # Calculate cosine similarity - check if embeddings are available
-            similarity_score = 0.5  # Default similarity score
-            if ('embeddings' in chroma_query_results and 
-                chroma_query_results['embeddings'] and 
-                len(chroma_query_results['embeddings'][0]) > i):
-                try:
-                    logger.info(f"Calculating similarity score for chunk {doc_id}")
-                    chunk_embedding = np.array(chroma_query_results['embeddings'][0][i]).reshape(1, -1)
-                    similarity_score = cosine_similarity(question_embedding_np, chunk_embedding)[0][0]
-                    logger.info(f"Successfully calculated similarity score: {similarity_score}")
-                except Exception as e:
-                    logger.warning(f"Error calculating similarity for chunk {doc_id}: {e}")
-                    # Fallback: use distance-based similarity if available
-                    if ('distances' in chroma_query_results and 
-                        chroma_query_results['distances'] and 
-                        len(chroma_query_results['distances'][0]) > i):
-                        # ChromaDB distance is typically cosine distance, convert to similarity
-                        distance = chroma_query_results['distances'][0][i]
-                        similarity_score = 1 - distance
-                        logger.info(f"Using distance-based fallback similarity score: {similarity_score}")
-                    else:
-                        similarity_score = 0.5  # Default fallback
-                        logger.info(f"Using default fallback similarity score: {similarity_score}")
+            # Get distance from ChromaDB
+            distance = chroma_query_results['distances'][0][i] if 'distances' in chroma_query_results else 0.5
             
-            # Apply similarity threshold
+            # Convert distance to similarity score
+            # For cosine distance (most common): similarity = 1 - distance
+            # For euclidean distance: similarity = 1 / (1 + distance)
+            # Check your ChromaDB distance metric configuration
+            
+            # Assuming cosine distance (default for most embeddings)
+            similarity_score = 1 - distance
+            logger.info(f"Distance of {i} for chunk {doc_id} (cosine distance): {distance:.3f}, Calculated similarity score: {similarity_score:.3f}")
+            
+            # Alternative for euclidean distance (uncomment if using euclidean):
+            # similarity_score = 1 / (1 + distance)
+            
+            logger.info(f"Distance of {i} for chunk {doc_id}: {distance:.3f}, Calculated similarity score: {similarity_score:.3f}")
+            
+            # Apply similarity threshold (first filter)
             if similarity_score < similarity_threshold:
-                logger.info(f"Skipping chunk {doc_id} due to low similarity score: {similarity_score}")
+                logger.debug(f"Skipping chunk {doc_id} due to low similarity score: {similarity_score:.3f}")
                 continue
 
-            # Apply date filter if provided
+            # Apply date filter if provided (second filter)
             if start_date_str and end_date_str:
                 try:
                     doc_date = datetime.fromisoformat(metadata['timestamp']).date()
@@ -344,57 +468,97 @@ def query_pages():
                     end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
 
                     if not (start_date <= doc_date <= end_date):
-                        logger.info(f"Skipping chunk {doc_id} due to date filter mismatch.")
+                        logger.debug(f"Skipping chunk {doc_id} due to date filter mismatch.")
                         continue
                 except ValueError:
                     logger.warning(f"Could not parse extracted date(s): start_date={start_date_str}, end_date={end_date_str}")
 
-            # Additional LLM-based relevance check for high-precision filtering
-            # try:
-            #     # Implement retry logic for Gemini API calls to handle rate limits
-            #     max_retries = 5
-            #     retry_delay = 1  # seconds
-            #     relevance_result = None
-            #     for attempt in range(max_retries):
-            #         try:
-            #             relevance_result = relevance_chain.invoke({"question": question, "content": content[:500]})  # Use first 500 chars for speed
-            #             break  # If successful, break the loop
-            #         except Exception as e:
-            #             logger.warning(f"Attempt {attempt + 1} failed for relevance chain: {e}")
-            #             if attempt < max_retries - 1:
-            #                 time.sleep(retry_delay)
-            #                 retry_delay *= 2  # Exponential backoff
-            #             else:
-            #                 logger.error(f"Max retries reached for relevance chain. Skipping chunk.")
-            #                 continue  # Skip to next chunk if all retries fail
+            # Fast keyword-based relevance check (third filter)
+            content_keywords = metadata.get('keywords', '').split() if metadata.get('keywords') else extract_keywords(content, top_k=10)
+            keyword_overlap = calculate_keyword_overlap(question_keywords, content_keywords)
+            
+            # Quick heuristic relevance check
+            quick_relevance = quick_relevance_filter(question, content, min_score=0.1)
+            
+            # Combine scores for ranking
+            combined_score = (
+                similarity_score * 0.4 +
+                quick_relevance['relevance_score'] * 0.4 +
+                keyword_overlap * 0.2
+            )
+            
+            # Only keep if it passes basic relevance
+            if quick_relevance['is_relevant'] or similarity_score > 0.8:
+                relevant_chunks.append({
+                    'content': content,
+                    'metadata': metadata,
+                    'similarity_score': similarity_score,
+                    'keyword_overlap': keyword_overlap,
+                    'quick_relevance_score': quick_relevance['relevance_score'],
+                    'combined_score': combined_score
+                })
+                logger.debug(f"Chunk {doc_id} passed filtering with combined score: {combined_score:.3f}")
 
-            #     if relevance_result is None:
-            #         continue # Skip to next chunk if relevance_result is still None after retries
-            #     if relevance_result.get('is_relevant', False) and relevance_result.get('relevance_score', 0) > 0.3:
-            #         relevant_chunks.append({
-            #             'content': content,
-            #             'metadata': metadata,
-            #             'similarity_score': similarity_score,
-            #             'relevance_score': relevance_result.get('relevance_score', 0)
-            #         })
-            #         logger.info(f"Chunk {doc_id} passed relevance check with score: {relevance_result.get('relevance_score', 0)}")
-            #     else:
-            #         logger.info(f"Chunk {doc_id} failed LLM relevance check")
-            # except Exception as e:
-            #     logger.warning(f"Error in relevance check for chunk {doc_id}: {e}")
-            #     # Fallback to similarity-based filtering if LLM check fails
-            #     relevant_chunks.append({
-            #         'content': content,
-            #         'metadata': metadata,
-            #         'similarity_score': similarity_score,
-            #         'relevance_score': similarity_score
-            #     })
+        # Sort by combined score
+        relevant_chunks.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        # Take top results and optionally apply LLM re-ranking to top candidates
+        if use_llm_rerank and len(relevant_chunks) > max_results:
+            # Only use LLM re-ranking on top candidates to reduce API calls
+            top_candidates = relevant_chunks[:max_results * 2]
+            
+            # Batch LLM relevance check (more efficient)
+            llm_checked_chunks = []
+            batch_content = []
+            batch_indices = []
+            
+            for idx, chunk in enumerate(top_candidates):
+                batch_content.append(chunk['content'][:400])  # Truncate for faster processing
+                batch_indices.append(idx)
+                
+                # Process in batches of 5 to avoid rate limits
+                if len(batch_content) == 5 or idx == len(top_candidates) - 1:
+                    try:
+                        # Single API call for multiple chunks
+                        batch_prompt = f"""Rate the relevance of each content snippet to the question: {question}
 
-        # Sort by combined relevance score
-        # relevant_chunks.sort(key=lambda x: (x['relevance_score'] + x['similarity_score']) / 2, reverse=True)
-        relevant_chunks.sort(key=lambda x: x['similarity_score'], reverse=True)
-        # Take top results˚
-        relevant_chunks = relevant_chunks[:max_results]
+Rate each snippet from 0-1 (1 being most relevant). Only return the scores separated by commas.
+
+Content snippets:
+""" + "\n\n".join([f"{i+1}. {content}" for i, content in enumerate(batch_content)])
+                        
+                        model = genai.GenerativeModel('gemini-2.0-flash')
+                        response = model.generate_content(batch_prompt)
+                        scores = [float(s.strip()) for s in response.text.split(',')]
+                        
+                        # Apply LLM scores
+                        for batch_idx, score in enumerate(scores):
+                            original_idx = batch_indices[batch_idx]
+                            chunk = top_candidates[original_idx]
+                            chunk['llm_relevance_score'] = score
+                            chunk['final_score'] = chunk['combined_score'] * 0.6 + score * 0.4
+                            
+                            if score > 0.3:  # Only keep if LLM thinks it's relevant
+                                llm_checked_chunks.append(chunk)
+                                
+                    except Exception as e:
+                        logger.warning(f"Error in batch LLM relevance check: {e}")
+                        # Fallback to original chunks
+                        for batch_idx in batch_indices:
+                            chunk = top_candidates[batch_idx]
+                            chunk['llm_relevance_score'] = chunk['combined_score']
+                            chunk['final_score'] = chunk['combined_score']
+                            llm_checked_chunks.append(chunk)
+                    
+                    # Reset batch
+                    batch_content = []
+                    batch_indices = []
+            
+            # Re-sort by final score
+            llm_checked_chunks.sort(key=lambda x: x['final_score'], reverse=True)
+            relevant_chunks = llm_checked_chunks[:max_results]
+        else:
+            relevant_chunks = relevant_chunks[:max_results]
         
         logger.info(f"Found {len(relevant_chunks)} relevant chunks after filtering.")
 
@@ -402,10 +566,6 @@ def query_pages():
             logger.info("No relevant content found after processing query and filters.")
             return jsonify({"message": "No relevant content found for your query.", "urls": []}), 200
 
-        # Prepare content for Gemini
-        relevant_contents = [chunk['content'] for chunk in relevant_chunks]
-        relevant_urls = []
-        
         # Group chunks by URL to avoid duplicate URLs
         url_groups = {}
         for chunk in relevant_chunks:
@@ -420,33 +580,42 @@ def query_pages():
             url_groups[url]['chunks'].append(chunk)
 
         # Create URL list with best chunks per URL
+        relevant_urls = []
         for url, group in url_groups.items():
-            # Sort chunks by relevance for this URL
-            group['chunks'].sort(key=lambda x: (x['relevance_score'] + x['similarity_score']) / 2, reverse=True)
+            # Sort chunks by final score for this URL
+            group['chunks'].sort(key=lambda x: x.get('final_score', x['combined_score']), reverse=True)
+            best_score = group['chunks'][0].get('final_score', group['chunks'][0]['combined_score'])
             relevant_urls.append({
                 'url': url,
                 'title': group['title'],
                 'favicon_url': group['favicon_url'],
-                'relevance_score': (group['chunks'][0]['relevance_score'] + group['chunks'][0]['similarity_score']) / 2
+                'relevance_score': best_score
             })
 
         # Sort URLs by relevance
         relevant_urls.sort(key=lambda x: x['relevance_score'], reverse=True)
 
-        # Use Gemini to generate answer
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        relevant_contents_str = '\n\n'.join([f"Source: {chunk['metadata']['url']}\nContent: {chunk['content']}" for chunk in relevant_chunks])
+        # Use Gemini for final answer generation with optimized prompt
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        prompt = f"""Based on the following relevant content, answer the question: {question}
+        # Create concise context from top chunks
+        context_parts = []
+        for chunk in relevant_chunks[:5]:  # Only use top 5 chunks
+            context_parts.append(f"Source: {chunk['metadata']['url']}\n{chunk['content'][:300]}...")  # Truncate content
+        
+        relevant_contents_str = '\n\n'.join(context_parts)
+        
+        # More efficient prompt
+        prompt = f"""Answer this question based on the provided context: {question}
 
-Content:
+Context:
 {relevant_contents_str}
 
-Provide a comprehensive answer based on the most relevant information. If you reference specific information, mention which source it came from.
+Provide a concise, accurate answer. If you reference specific information, mention the source URL.
 
 Question: {question}"""
         
-        logger.info("Sending prompt to Gemini model.")
+        logger.info("Sending optimized prompt to Gemini model.")
         response = model.generate_content(prompt)
         logger.info("Received response from Gemini model.")
 
@@ -464,7 +633,8 @@ Question: {question}"""
             "answer": response.text,
             "source_urls": source_urls_for_frontend,
             "total_chunks_found": len(relevant_chunks),
-            "similarity_threshold_used": similarity_threshold
+            "similarity_threshold_used": similarity_threshold,
+            "llm_rerank_used": use_llm_rerank
         }
         
         logger.info(f"Returning result with {len(source_urls_for_frontend)} unique URLs")
